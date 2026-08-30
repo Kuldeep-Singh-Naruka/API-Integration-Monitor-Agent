@@ -1,0 +1,32 @@
+# Environment variables — never commit secrets
+.env
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Test cache
+.pytest_cache/
+
+# macOS metadata
+.DS_Store
+
+# Distribution / packaging
+*.egg-info/
+dist/
+build/
+*.egg
+
+# IDE files
+.vscode/
+.idea/
+
+# Alembic
+# (keep alembic/ folder but ignore generated pycache inside it)
