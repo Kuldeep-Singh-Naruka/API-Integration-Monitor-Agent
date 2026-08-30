@@ -4,21 +4,21 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.monitor import MonitoredAPI
-from app.schemas.api_schema import (
+from app.models.monitored_api import MonitoredAPI
+from app.schemas.monitored_api_schema import (
     MonitoredAPICreate,
     MonitoredAPIUpdate,
     MonitoredAPIResponse,
 )
 
 router = APIRouter(
-    prefix="/apis",
+    prefix="/monitored-apis",
     tags=["Monitored APIs"],
 )
 
 
 # ---------------------------------------------------------------------------
-# POST /apis — Add a new API to monitor
+# POST /monitored-apis — Add a new API to monitor
 # ---------------------------------------------------------------------------
 @router.post(
     "/",
@@ -45,7 +45,7 @@ def create_api(
 
 
 # ---------------------------------------------------------------------------
-# GET /apis — List all monitored APIs
+# GET /monitored-apis — List all monitored APIs
 # ---------------------------------------------------------------------------
 @router.get(
     "/",
@@ -64,7 +64,7 @@ def get_all_apis(
 
 
 # ---------------------------------------------------------------------------
-# GET /apis/{api_id} — Retrieve a single API
+# GET /monitored-apis/{api_id} — Retrieve a single API
 # ---------------------------------------------------------------------------
 @router.get(
     "/{api_id}",
@@ -90,7 +90,7 @@ def get_api(
 
 
 # ---------------------------------------------------------------------------
-# PATCH /apis/{api_id} — Update is_active flag
+# PATCH /monitored-apis/{api_id} — Update is_active flag
 # ---------------------------------------------------------------------------
 @router.patch(
     "/{api_id}",
@@ -125,7 +125,7 @@ def update_api(
 
 
 # ---------------------------------------------------------------------------
-# DELETE /apis/{api_id} — Remove an API from monitoring
+# DELETE /monitored-apis/{api_id} — Remove an API from monitoring
 # ---------------------------------------------------------------------------
 @router.delete(
     "/{api_id}",

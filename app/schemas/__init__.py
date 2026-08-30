@@ -1,4 +1,4 @@
-from app.schemas.api_schema import (
+from app.schemas.monitored_api_schema import (
     MonitoredAPICreate,
     MonitoredAPIUpdate,
     MonitoredAPIResponse,

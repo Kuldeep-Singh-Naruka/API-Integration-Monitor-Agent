@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from app.core.config import settings
 from app.database import Base, engine
-from app.routers import apis, alerts
+from app.routers import monitored_apis, alerts
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +40,7 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 # Routers
 # ---------------------------------------------------------------------------
-app.include_router(apis.router)
+app.include_router(monitored_apis.router)
 app.include_router(alerts.router)
 
 
