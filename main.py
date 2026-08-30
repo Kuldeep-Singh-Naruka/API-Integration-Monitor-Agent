@@ -1,4 +1,5 @@
 import uvicorn
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.core.config import settings
@@ -7,9 +8,24 @@ from app.routers import apis, alerts
 
 
 # ---------------------------------------------------------------------------
+# Lifespan — replaces deprecated @app.on_event("startup")
+# Runs setup code before the app starts accepting requests.
+# ---------------------------------------------------------------------------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Create all database tables on startup if they do not exist.
+    In production, use Alembic migrations instead of create_all().
+    """
+    Base.metadata.create_all(bind=engine)
+    yield  # App runs here — add shutdown logic after yield if needed
+
+
+# ---------------------------------------------------------------------------
 # Application instance
 # ---------------------------------------------------------------------------
 app = FastAPI(
+    lifespan=lifespan,
     title=settings.APP_NAME,
     description=(
         "Monitor third-party API documentation for breaking and non-breaking changes. "
@@ -19,19 +35,6 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
-
-
-# ---------------------------------------------------------------------------
-# Startup event — auto-create database tables
-# ---------------------------------------------------------------------------
-@app.on_event("startup")
-def on_startup() -> None:
-    """
-    Create all database tables on application startup if they do not exist.
-    In production you would use Alembic migrations instead, but this is
-    convenient for development and first-time setup.
-    """
-    Base.metadata.create_all(bind=engine)
 
 
 # ---------------------------------------------------------------------------

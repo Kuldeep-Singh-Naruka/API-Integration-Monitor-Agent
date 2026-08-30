@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.monitor import Alert
+from app.models.monitor import Alert, MonitoredAPI
 from app.schemas.alert_schema import (
     AlertCreate,
     AlertUpdate,
@@ -15,6 +15,44 @@ router = APIRouter(
     prefix="/alerts",
     tags=["Alerts"],
 )
+
+
+# ---------------------------------------------------------------------------
+# POST /alerts — Create a new alert
+# ---------------------------------------------------------------------------
+@router.post(
+    "/",
+    response_model=AlertResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a new alert for a monitored API",
+)
+def create_alert(
+    payload: AlertCreate,
+    db: Session = Depends(get_db),
+) -> AlertResponse:
+    """
+    Create a new alert linked to a monitored API.
+    Returns 404 if the referenced api_id does not exist.
+    Week 2 diff logic will call this internally to record detected changes.
+    """
+    # Validate that the referenced API actually exists
+    api = db.query(MonitoredAPI).filter(MonitoredAPI.id == payload.api_id).first()
+    if api is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Monitored API with id={payload.api_id} not found.",
+        )
+
+    new_alert = Alert(
+        api_id=payload.api_id,
+        summary=payload.summary,
+        severity=payload.severity,
+        raw_diff=payload.raw_diff,
+    )
+    db.add(new_alert)
+    db.commit()
+    db.refresh(new_alert)
+    return new_alert  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------

@@ -62,7 +62,7 @@ cp .env.example .env
 Edit `.env`:
 
 ```env
-DATABASE_URL=postgresql+psycopg2://admin:qwerty@localhost:5432/api_integration_monitor
+DATABASE_URL=postgresql+psycopg2://USER:PASSWORD@localhost:5432/api_integration_monitor
 APP_NAME=API Integration Monitor
 DEBUG=True
 ```
@@ -71,8 +71,8 @@ DEBUG=True
 
 ```sql
 CREATE DATABASE api_integration_monitor;
-CREATE USER admin WITH PASSWORD 'qwerty';
-GRANT ALL PRIVILEGES ON DATABASE api_integration_monitor TO admin;
+CREATE USER USER WITH PASSWORD 'PASSWORD';
+GRANT ALL PRIVILEGES ON DATABASE api_integration_monitor TO USER;
 ```
 
 ### 3. Install dependencies (inside your virtualenv)
@@ -122,6 +122,7 @@ Tables are created automatically on startup via `Base.metadata.create_all()`.
 
 | Method | Path | Status | Description |
 |--------|------|--------|-------------|
+| `POST` | `/alerts/` | 201 | Create a new alert |
 | `GET` | `/alerts/` | 200 | List all alerts |
 | `GET` | `/alerts/api/{api_id}` | 200 | All alerts for one API |
 | `GET` | `/alerts/{alert_id}` | 200 / 404 | Get a single alert |
