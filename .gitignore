@@ -1,5 +1,6 @@
 # Environment variables — never commit secrets
 .env
+chroma_data
 
 # Virtual environment
 venv/

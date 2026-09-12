@@ -35,5 +35,7 @@ class MonitoredAPIResponse(BaseModel):
     is_active: bool
     created_at: datetime
     updated_at: datetime
+    last_content_hash: Optional[str] = None
+    last_checked_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
