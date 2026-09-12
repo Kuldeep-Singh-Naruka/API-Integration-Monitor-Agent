@@ -1,7 +1,11 @@
 from datetime import datetime
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
+
+# The three allowed severity values, kept as a single type alias so that
+# both AlertCreate and create_alert_record() share an identical annotation.
+SeverityLiteral = Literal["breaking", "non-breaking", "error"]
 
 
 class AlertCreate(BaseModel):
@@ -12,7 +16,11 @@ class AlertCreate(BaseModel):
 
     api_id: int
     summary: str
-    severity: str  # Expected values: "breaking" or "non-breaking"
+    severity: SeverityLiteral
+    # "breaking"     — a detected doc-content change that breaks backwards compat
+    # "non-breaking" — a detected doc-content change that is backwards-compatible
+    # "error"        — the scraper failed to fetch the docs at all (no content
+    #                  diff available; raw_diff will be None)
     raw_diff: Optional[str] = None
 
 

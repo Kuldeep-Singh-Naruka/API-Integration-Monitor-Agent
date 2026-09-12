@@ -11,6 +11,7 @@ from app.schemas.alert_schema import (
     AlertUpdate,
     AlertResponse,
 )
+from app.services.alerts import create_alert_record
 
 router = APIRouter(
     prefix="/alerts",
@@ -44,16 +45,13 @@ def create_alert(
             detail=f"Monitored API with id={payload.api_id} not found.",
         )
 
-    new_alert = Alert(
-        api_id=payload.api_id,
-        summary=payload.summary,
-        severity=payload.severity,
-        raw_diff=payload.raw_diff,
+    return create_alert_record(  # type: ignore[return-value]
+        db,
+        payload.api_id,
+        payload.summary,
+        payload.severity,
+        payload.raw_diff,
     )
-    db.add(new_alert)
-    db.commit()
-    db.refresh(new_alert)
-    return new_alert  # type: ignore[return-value]
 
 
 # ---------------------------------------------------------------------------
