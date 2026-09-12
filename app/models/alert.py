@@ -1,10 +1,13 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from sqlalchemy import String, Text, Boolean, Integer, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+if TYPE_CHECKING:
+    from app.models.monitored_api import MonitoredAPI
 
 
 def _utcnow() -> datetime:
@@ -50,7 +53,7 @@ class Alert(Base):
     )
 
     # Relationship — string reference "MonitoredAPI" avoids circular imports
-    api: Mapped["MonitoredAPI"] = relationship(
+    api: Mapped[MonitoredAPI] = relationship(
         "MonitoredAPI",
         back_populates="alerts",
     )

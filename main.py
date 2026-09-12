@@ -52,7 +52,7 @@ app.include_router(alerts.router)
     tags=["Health"],
     summary="Health check",
 )
-def health_check() -> dict:
+def health_check() -> dict[str, str]:
     """
     Confirm the application is running and return the configured app name.
     """
