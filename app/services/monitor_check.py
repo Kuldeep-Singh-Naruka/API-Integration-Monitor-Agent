@@ -14,6 +14,7 @@ Dependency graph (imports flow downward, no cycles):
         <- vectorstore      (strip_navigation_boilerplate, chunk_markdown,
                              compute_content_hash, store_chunks)
         <- alerts           (create_alert_record)
+        <- summarizer       (compute_diff, summarize_change)
         <- models           (MonitoredAPI, Alert)
 """
 
@@ -29,6 +30,7 @@ from app.models.alert import Alert
 from app.models.monitored_api import MonitoredAPI
 from app.services.alerts import create_alert_record
 from app.services.scraper import fetch_docs_content
+from app.services.summarizer import compute_diff, summarize_change
 from app.services.vectorstore import (
     chunk_markdown,
     compute_content_hash,
@@ -69,10 +71,12 @@ class CheckResult:
                 Hash differs from the stored value -- a real content change
                 was detected.  ChromaDB has been fully rebuilt with the new
                 chunks and Postgres has been updated with the new hash and
-                raw content.  ``old_content`` and ``new_content`` are
-                populated for the LLM summarization step (next task).
-                No Alert is created here -- the severity decision
-                (breaking vs non-breaking) requires LLM analysis.
+                raw content.  An Alert is always created for this status:
+                either a "breaking" or "non-breaking" alert produced by LLM
+                summarisation, or an "error" alert if summarisation itself
+                failed (the diff is still captured in raw_diff in that case).
+                ``old_content`` and ``new_content`` are populated in all
+                "changed" outcomes.
 
         alert:       Set only when status == "error".
         old_content: Set only when status == "changed".  The stripped text
@@ -121,7 +125,8 @@ def check_monitored_api(db: Session, api: MonitoredAPI) -> CheckResult:
             "baseline_established" -- first ever scrape; baseline stored.
             "no_change"           -- content hash unchanged; no action taken.
             "changed"             -- new content detected; ChromaDB rebuilt;
-                                     old/new content returned for LLM step.
+                                     alert created (breaking/non-breaking from
+                                     LLM, or error if summarisation failed).
 
     Raises:
         Any exception from chunk_markdown() or store_chunks() -- these
@@ -198,11 +203,79 @@ def check_monitored_api(db: Session, api: MonitoredAPI) -> CheckResult:
     db.commit()
     db.refresh(api)
 
-    # Return old and new content for the LLM summarization step (next task).
-    # No Alert is created here -- severity (breaking vs non-breaking) requires
-    # LLM analysis that does not exist yet.
+    # Guard: last_raw_content should always be populated whenever
+    # last_content_hash is set, but protect against data corruption where the
+    # snapshot is missing.  Without it we cannot compute a meaningful diff.
+    if old_content is None:
+        alert = create_alert_record(
+            db=db,
+            api_id=api.id,
+            summary=(
+                "Content changed (hash mismatch) but the previous content "
+                "snapshot is missing -- cannot compute diff."
+            ),
+            severity="error",
+            raw_diff=None,
+        )
+        return CheckResult(
+            status="changed",
+            alert=alert,
+            old_content=None,
+            new_content=stripped,
+        )
+
+    # Stage 1: compute the unified diff (pure Python, no I/O).
+    # If this raises (e.g. identical content despite differing hashes due to
+    # data inconsistency) the diff is unavailable and raw_diff stays None.
+    try:
+        diff: str = compute_diff(old_content, stripped)
+    except Exception as exc:
+        alert = create_alert_record(
+            db=db,
+            api_id=api.id,
+            summary=f"Content changed but diff computation failed: {exc}",
+            severity="error",
+            raw_diff=None,
+        )
+        return CheckResult(
+            status="changed",
+            alert=alert,
+            old_content=old_content,
+            new_content=stripped,
+        )
+
+    # Stage 2: call the Groq LLM to classify and summarise the diff.
+    # If summarisation fails for any reason (network error, bad JSON, model
+    # quota, invalid severity, etc.) we still record the change as an error
+    # alert -- but now we CAN include the raw diff since Stage 1 succeeded.
+    try:
+        change_summary = summarize_change(diff)
+    except Exception as exc:
+        alert = create_alert_record(
+            db=db,
+            api_id=api.id,
+            summary=f"Content changed but summarization failed: {exc}",
+            severity="error",
+            raw_diff=diff,         # diff is available; preserve it
+        )
+        return CheckResult(
+            status="changed",
+            alert=alert,
+            old_content=old_content,
+            new_content=stripped,
+        )
+
+    alert = create_alert_record(
+        db=db,
+        api_id=api.id,
+        summary=change_summary.summary,
+        severity=change_summary.severity,
+        raw_diff=diff,
+        suggested_fix=change_summary.suggested_fix,
+    )
     return CheckResult(
         status="changed",
+        alert=alert,
         old_content=old_content,
         new_content=stripped,
     )

@@ -51,6 +51,7 @@ def create_alert(
         payload.summary,
         payload.severity,
         payload.raw_diff,
+        payload.suggested_fix,
     )
 
 

@@ -44,6 +44,7 @@ class Alert(Base):
         comment="Allowed values: 'breaking', 'non-breaking', or 'error'",
     )
     raw_diff: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    suggested_fix: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
 
     # State
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

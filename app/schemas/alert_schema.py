@@ -22,6 +22,10 @@ class AlertCreate(BaseModel):
     # "error"        — the scraper failed to fetch the docs at all (no content
     #                  diff available; raw_diff will be None)
     raw_diff: Optional[str] = None
+    # suggested_fix is normally populated by the LLM summariser, but a caller
+    # may supply one manually when constructing an alert without going through
+    # the summariser (e.g. in tests or manual interventions).
+    suggested_fix: Optional[str] = None
 
 
 class AlertUpdate(BaseModel):
@@ -43,6 +47,8 @@ class AlertResponse(BaseModel):
     api_id: int
     summary: str
     severity: str
+    raw_diff: Optional[str]
+    suggested_fix: Optional[str]
     is_read: bool
     created_at: datetime
 

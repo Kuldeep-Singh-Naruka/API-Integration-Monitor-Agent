@@ -22,6 +22,7 @@ def create_alert_record(
     summary: str,
     severity: str,
     raw_diff: Optional[str] = None,
+    suggested_fix: Optional[str] = None,
 ) -> Alert:
     """Insert and return a new Alert row for the given api_id.
 
@@ -32,15 +33,19 @@ def create_alert_record(
     they need it.
 
     Args:
-        db:       An active SQLAlchemy Session (provided by Depends(get_db)
-                  in the router, or opened directly by the scheduler).
-        api_id:   Primary key of the MonitoredAPI this alert belongs to.
-        summary:  Human-readable description of the change or failure.
-        severity: One of "breaking", "non-breaking", or "error".
-                  The caller is expected to pass a value that matches
-                  the SeverityLiteral type defined in alert_schema.py.
-        raw_diff: Optional unified-diff or change payload.  Should be
-                  None when severity is "error" (no diff is available).
+        db:            An active SQLAlchemy Session (provided by Depends(get_db)
+                       in the router, or opened directly by the scheduler).
+        api_id:        Primary key of the MonitoredAPI this alert belongs to.
+        summary:       Human-readable description of the change or failure.
+        severity:      One of "breaking", "non-breaking", or "error".
+                       The caller is expected to pass a value that matches
+                       the SeverityLiteral type defined in alert_schema.py.
+        raw_diff:      Optional unified-diff or change payload.  Should be
+                       None when severity is "error" (no diff is available).
+        suggested_fix: Optional short, concrete suggestion for what a developer
+                       should check or update in their own integration.
+                       Normally populated by the LLM summariser; may be None
+                       when summarisation was skipped or failed.
 
     Returns:
         The freshly committed and refreshed Alert ORM instance.
@@ -50,6 +55,7 @@ def create_alert_record(
         summary=summary,
         severity=severity,
         raw_diff=raw_diff,
+        suggested_fix=suggested_fix,
     )
     db.add(new_alert)
     db.commit()

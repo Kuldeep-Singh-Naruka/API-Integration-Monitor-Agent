@@ -1,18 +1,22 @@
-﻿"""
+"""
 tests/monitor_check_test.py
 ----------------------------
 End-to-end test for check_monitored_api() covering all four outcome branches:
 
     1. baseline_established  -- first successful check for a fresh API row
     2. no_change             -- immediate re-check with identical content
-    3. changed               -- hash manually poisoned to simulate a doc update
+    3. changed               -- hash manually poisoned to simulate a doc update;
+                                now also asserts that an Alert is created and
+                                persisted (breaking/non-breaking from LLM, or
+                                "error" severity if summarisation itself failed).
     4. error                 -- bad URL so Tavily fails and an Alert is created
 
 Run from the project root (with venv active):
     python tests/monitor_check_test.py
 
 Requirements:
-    - .env with DATABASE_URL and TAVILY_API_KEY set and pointing at a live DB
+    - .env with DATABASE_URL, TAVILY_API_KEY, and GROQ_API_KEY set and
+      pointing at a live DB
     - DB tables must already exist (app was started at least once after last
       DROP TABLE so create_all() ran and the new columns are present)
     - Internet access for Tavily scrape
@@ -219,41 +223,90 @@ db2.close()
 # Manually set last_content_hash to a fake value to simulate a doc change.
 # Verify:
 #   - status == "changed"
+#   - alert is NOT None (created by summariser or error fallback)
+#   - alert.severity is one of "breaking", "non-breaking", "error"
+#   - alert.raw_diff is populated
+#   - alert row is persisted in DB
 #   - old_content matches what was stored before
 #   - new_content is the fresh scrape (non-empty)
 #   - last_content_hash updated to the real new hash
 #   - ChromaDB collection rebuilt (count may differ from original)
 # ===========================================================================
-section("TEST 3 -- changed (poisoned hash simulates doc update)")
+section("TEST 3 -- changed (poisoned hash simulates doc update + LLM alert)")
 
 db3: Session = open_session()
 api3: MonitoredAPI = db3.query(MonitoredAPI).filter_by(id=test_api_id).one()
 
-real_content_before: str = api3.last_raw_content  # type: ignore[assignment]
-real_hash_before: str = api3.last_content_hash    # type: ignore[assignment]
-
-# Poison the stored hash so check_monitored_api() thinks the content changed.
+# Poison BOTH the hash AND the raw content to simulate a real doc change.
+# In production a hash mismatch always means the scraped content genuinely
+# changed; we must mirror that here.  Poisoning only the hash would leave
+# old_content == new_content, which compute_diff() correctly rejects.
 FAKE_HASH: str = "a" * 64
+FAKE_OLD_CONTENT: str = (
+    "# Old API Documentation (simulated previous version)\n\n"
+    "## Endpoint: GET /v1/items\n\n"
+    "Returns a list of items. The `limit` parameter is required.\n\n"
+    "### Response\n\n"
+    "```json\n"
+    '{"items": [...], "total": 42}\n'
+    "```\n"
+)
 api3.last_content_hash = FAKE_HASH
+api3.last_raw_content = FAKE_OLD_CONTENT
 db3.commit()
-info(f"Poisoned last_content_hash to: {FAKE_HASH[:16]}...")
+info(f"Poisoned last_content_hash to  : {FAKE_HASH[:16]}...")
+info(f"Poisoned last_raw_content to   : {len(FAKE_OLD_CONTENT)} chars (fake old docs)")
 
 info("Calling check_monitored_api() -- third run (changed expected)...")
+info("NOTE: This triggers a real Groq API call for LLM summarisation.")
 result3: CheckResult = check_monitored_api(db=db3, api=api3)
 
 if result3.status != "changed":
     fail(f"Expected 'changed', got '{result3.status}'")
 
+# --- Alert must always be created on the "changed" branch ---
+if result3.alert is None:
+    fail(
+        "result.alert is None on 'changed' result -- "
+        "check_monitored_api() must always create an Alert for a detected change."
+    )
+
+_VALID_CHANGE_SEVERITIES: set[str] = {"breaking", "non-breaking", "error"}
+if result3.alert.severity not in _VALID_CHANGE_SEVERITIES:
+    fail(
+        f"Alert severity {result3.alert.severity!r} is not one of "
+        f"{_VALID_CHANGE_SEVERITIES}."
+    )
+
+if not result3.alert.raw_diff:
+    fail(
+        "Alert.raw_diff is empty -- the diff must be captured whenever "
+        "compute_diff() succeeds, regardless of whether summarization fails."
+    )
+
+# Verify the Alert row is persisted in the DB (not just in-memory).
+db_alert3: Alert | None = db3.query(Alert).filter_by(
+    api_id=test_api_id
+).order_by(Alert.created_at.desc()).first()
+
+if db_alert3 is None:
+    fail("No Alert row found in DB for the 'changed' run.")
+
+if db_alert3.severity not in _VALID_CHANGE_SEVERITIES:
+    fail(f"Persisted alert severity invalid: {db_alert3.severity!r}")
+
+# --- Content / hash checks ---
 if result3.old_content is None:
     fail("old_content is None on 'changed' result.")
 
 if result3.new_content is None:
     fail("new_content is None on 'changed' result.")
 
-if result3.old_content != real_content_before:
+# old_content must be the fake snapshot we stored, not the real page content.
+if result3.old_content != FAKE_OLD_CONTENT:
     fail(
-        f"old_content does not match what was stored before poisoning.\n"
-        f"  Expected first 80 chars: {real_content_before[:80]!r}\n"
+        f"old_content does not match the fake snapshot written before the run.\n"
+        f"  Expected first 80 chars: {FAKE_OLD_CONTENT[:80]!r}\n"
         f"  Got first 80 chars     : {result3.old_content[:80]!r}"
     )
 
@@ -261,11 +314,15 @@ if api3.last_content_hash == FAKE_HASH:
     fail("last_content_hash still the fake value after 'changed' run.")
 
 col3 = chroma.get_collection(f"api_docs_{test_api_id}")
-info(f"ChromaDB chunks after rebuild: {col3.count()}")
-info(f"old_content length: {len(result3.old_content):,} chars")
-info(f"new_content length: {len(result3.new_content):,} chars")
-info(f"new hash: {api3.last_content_hash[:16]}...  (should == real hash)")
-ok("TEST 3 PASSED -- changed")
+info(f"ChromaDB chunks after rebuild : {col3.count()}")
+info(f"old_content length            : {len(result3.old_content):,} chars")
+info(f"new_content length            : {len(result3.new_content):,} chars")
+info(f"new hash                      : {api3.last_content_hash[:16]}...  (should == real hash)")
+info(f"Alert severity                : {result3.alert.severity!r}")
+info(f"Alert summary                 : {result3.alert.summary[:100]!r}")
+info(f"Alert suggested_fix           : {str(result3.alert.suggested_fix)[:100]!r}")
+info(f"Alert raw_diff length         : {len(result3.alert.raw_diff):,} chars")
+ok("TEST 3 PASSED -- changed (alert created, severity valid, diff captured)")
 db3.close()
 
 
@@ -344,6 +401,6 @@ print("  ALL 4 TESTS PASSED")
 print()
 print(f"  TEST 1  baseline_established : OK  ({chunk_count} chunks embedded)")
 print( "  TEST 2  no_change            : OK")
-print( "  TEST 3  changed              : OK  (hash rebuild + old/new content)")
+print( "  TEST 3  changed              : OK  (hash rebuild + LLM alert created)")
 print( "  TEST 4  error                : OK  (error alert created in DB)")
 print()
