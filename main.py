@@ -4,7 +4,7 @@ from fastapi import FastAPI
 
 from app.core.config import settings
 from app.database import Base, engine
-from app.routers import monitored_apis, alerts
+from app.routers import monitored_apis, alerts, internal
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +42,9 @@ app = FastAPI(
 # ---------------------------------------------------------------------------
 app.include_router(monitored_apis.router)
 app.include_router(alerts.router)
+# NOTE: This router is intended for the scheduled GitHub Actions workflow only.
+# It is NOT a user-facing feature and should not be referenced in public docs.
+app.include_router(internal.router)
 
 
 # ---------------------------------------------------------------------------

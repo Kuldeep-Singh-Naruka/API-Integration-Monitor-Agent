@@ -1,0 +1,21 @@
+name: Scheduled API Check
+
+on:
+  # Cron trigger intentionally disabled for now -- this workflow currently
+  # only runs when manually triggered via workflow_dispatch (the "Run
+  # workflow" button in the GitHub Actions tab, or the GitHub API).
+  # To re-enable daily automation later, uncomment the schedule block below:
+  #
+  # schedule:
+  #   - cron: "17 3 * * *"   # 03:17 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  run-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger scheduled check
+        run: |
+          curl --fail -X POST \
+            -H "X-Scheduler-Secret: ${{ secrets.SCHEDULER_SECRET }}" \
+            "${{ secrets.RENDER_APP_URL }}/internal/run-checks"
