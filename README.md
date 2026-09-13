@@ -1,207 +1,63 @@
 # API Integration Monitor
 
-A production-ready **FastAPI + PostgreSQL** service that tracks third-party API documentation for breaking and non-breaking changes.
+A production-ready backend service that actively monitors third-party API documentation for breaking and non-breaking changes.
+
+Rather than a generic template, here is the **real status** of what this project actually does and how much is completed right now.
+
+## 🚀 Current Status: Core Engine is Fully Built
+
+The entire backend pipeline for monitoring, detecting, classifying, and storing API changes is **done and operational**.
+
+### What is Completed:
+- **FastAPI + PostgreSQL** backend with SQLAlchemy ORM.
+- **Scraping Engine**: Uses [Tavily](https://tavily.com/) to fetch the latest documentation content, aggressively stripping out navigation boilerplate to reduce noise.
+- **Change Detection**: Uses SHA-256 hashing to quickly detect if docs have changed, and [ChromaDB](https://www.trychroma.com/) for chunked vector storage.
+- **AI Classification**: Uses [Groq](https://groq.com/) (LLM) to parse unified diffs and classify API changes strictly as `breaking` or `non-breaking`, providing developer-friendly summaries and fix suggestions.
+- **Orchestration**: A bulletproof orchestration layer (`monitor_check.py`) that handles baseline establishments, unchanged states, and error handling. Faults are isolated so one failing API scrape doesn't crash the whole batch.
+- **Automated Scheduling**: A protected `/internal/run-checks` endpoint triggered automatically by a **GitHub Actions daily cron job** (`.github/workflows/scheduled-check.yml`), secured by a timing-attack-safe shared secret.
+- **RESTful Endpoints**: Full CRUD endpoints for managing Monitored APIs and reading Alerts.
+---
+
+## ⚙️ How it Works
+
+1. **Trigger**: GitHub Actions runs daily at 03:17 UTC and hits `POST /internal/run-checks`.
+2. **Fetch**: The system loops over all active APIs and fetches their docs via Tavily.
+3. **Compare**: It strips boilerplate and hashes the markdown. If the hash matches the database, it skips to the next API to save resources.
+4. **Diff & Analyze**: If the hash changes, it computes a pure python text diff of the markdown, then sends that diff to Groq.
+5. **Classify**: Groq reads the diff, classifies the change, and generates an `Alert` (e.g., `"Endpoint /v1/charges deprecated"` -> `breaking`).
+6. **Store**: The vector store (ChromaDB) is rebuilt with the new chunks, and the Postgres database is updated with the new hash, raw content, and the new Alert.
 
 ---
 
-## Tech Stack
+## 🛠 Setup & Local Development
 
-| Layer | Technology |
-|-------|-----------|
-| API Framework | FastAPI |
-| Database | PostgreSQL |
-| ORM | SQLAlchemy 2.0 |
-| DB Driver | psycopg2-binary |
-| Settings | pydantic-settings |
-| Migrations | Alembic |
-| Server | Uvicorn |
-
----
-
-## Project Structure
-
-```
-api-monitor/
-├── app/
-│   ├── __init__.py
-│   ├── database.py           # Engine, session, Base, get_db()
-│   ├── models/
-│   │   ├── __init__.py
-│   │   └── monitor.py        # MonitoredAPI & Alert ORM models
-│   ├── schemas/
-│   │   ├── __init__.py
-│   │   ├── api_schema.py     # Pydantic schemas for APIs
-│   │   └── alert_schema.py   # Pydantic schemas for Alerts
-│   ├── routers/
-│   │   ├── __init__.py
-│   │   ├── apis.py           # /apis endpoints
-│   │   └── alerts.py         # /alerts endpoints
-│   └── core/
-│       ├── __init__.py
-│       └── config.py         # Settings via pydantic-settings
-├── main.py                   # FastAPI app entry point
-├── .env                      # Local secrets — NOT committed to Git
-├── .env.example              # Key template — committed to Git
-├── .gitignore
-├── requirements.txt
-└── README.md
-```
-
----
-
-## Quick Start
-
-### 1. Set up your environment
-
-Copy the example env file and fill in your values:
-
+### 1. Environment
+Copy `.env.example` to `.env` and fill in your keys:
 ```bash
 cp .env.example .env
 ```
+You will need:
+- A local PostgreSQL database (`DATABASE_URL`)
+- A [Tavily API Key](https://tavily.com/) (`TAVILY_API_KEY`)
+- A [Groq API Key](https://console.groq.com/keys) (`GROQ_API_KEY`)
+- A generated `SCHEDULER_SECRET` (Run: `python -c "import secrets; print(secrets.token_urlsafe(32))"`)
 
-Edit `.env`:
-
-```env
-DATABASE_URL=postgresql+psycopg2://USER:PASSWORD@localhost:5432/api_integration_monitor
-APP_NAME=API Integration Monitor
-DEBUG=True
-```
-
-### 2. Create the PostgreSQL database
-
-```sql
-CREATE DATABASE api_integration_monitor;
-CREATE USER USER WITH PASSWORD 'PASSWORD';
-GRANT ALL PRIVILEGES ON DATABASE api_integration_monitor TO USER;
-```
-
-### 3. Install dependencies (inside your virtualenv)
-
+### 2. Install Dependencies
+Make sure you are in your virtual environment, then run:
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Run the server
-
+### 3. Run the Server
 ```bash
-# Option A — direct
-python main.py
-
-# Option B — uvicorn with hot reload
 uvicorn main:app --reload
 ```
+- **Docs (Swagger)**: http://localhost:8000/docs
+- **ReDoc**: http://localhost:8000/redoc
 
-Tables are created automatically on startup via `Base.metadata.create_all()`.
-
-### 5. Open the interactive API docs
-
-- **Swagger UI** → [http://localhost:8000/docs](http://localhost:8000/docs)
-- **ReDoc** → [http://localhost:8000/redoc](http://localhost:8000/redoc)
-
----
-
-## API Endpoints
-
-### Health
-
-| Method | Path | Status | Description |
-|--------|------|--------|-------------|
-| `GET` | `/` | 200 | Health check |
-
-### Monitored APIs
-
-| Method | Path | Status | Description |
-|--------|------|--------|-------------|
-| `POST` | `/apis/` | 201 | Register a new API to monitor |
-| `GET` | `/apis/` | 200 | List all monitored APIs |
-| `GET` | `/apis/{api_id}` | 200 / 404 | Get a single API |
-| `PATCH` | `/apis/{api_id}` | 200 / 404 | Toggle `is_active` |
-| `DELETE` | `/apis/{api_id}` | 204 / 404 | Delete an API and its alerts |
-
-### Alerts
-
-| Method | Path | Status | Description |
-|--------|------|--------|-------------|
-| `POST` | `/alerts/` | 201 | Create a new alert |
-| `GET` | `/alerts/` | 200 | List all alerts |
-| `GET` | `/alerts/api/{api_id}` | 200 | All alerts for one API |
-| `GET` | `/alerts/{alert_id}` | 200 / 404 | Get a single alert |
-| `PATCH` | `/alerts/{alert_id}` | 200 / 404 | Mark as read |
-
----
-
-## Database Schema
-
-### `monitored_apis`
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `INTEGER` | Primary key, auto-increment |
-| `name` | `VARCHAR(255)` | Not nullable |
-| `docs_url` | `VARCHAR(500)` | Not nullable |
-| `is_active` | `BOOLEAN` | Default `true` |
-| `created_at` | `TIMESTAMP` | Auto-set on insert (UTC) |
-| `updated_at` | `TIMESTAMP` | Auto-set on insert + update (UTC) |
-
-### `alerts`
-
-| Column | Type | Notes |
-|--------|------|-------|
-| `id` | `INTEGER` | Primary key, auto-increment |
-| `api_id` | `INTEGER` | FK → `monitored_apis.id` (cascade delete) |
-| `summary` | `TEXT` | Not nullable |
-| `severity` | `VARCHAR(50)` | `"breaking"` or `"non-breaking"` |
-| `raw_diff` | `TEXT` | Nullable |
-| `is_read` | `BOOLEAN` | Default `false` |
-| `created_at` | `TIMESTAMP` | Auto-set on insert (UTC) |
-
----
-
-## Example Requests
-
-### Register an API
-
+### 4. Trigger a Manual Check
+You can trigger the batch check locally (mimicking the GitHub Action) by passing your secret:
 ```bash
-curl -X POST http://localhost:8000/apis/ \
-  -H "Content-Type: application/json" \
-  -d '{"name": "Stripe API", "docs_url": "https://stripe.com/docs/api"}'
+curl -X POST http://localhost:8000/internal/run-checks \
+  -H "X-Scheduler-Secret: your_long_random_secret_here"
 ```
-
-### Create an Alert
-
-```bash
-curl -X POST http://localhost:8000/alerts/ \
-  -H "Content-Type: application/json" \
-  -d '{
-    "api_id": 1,
-    "summary": "Endpoint /v1/charges deprecated",
-    "severity": "breaking",
-    "raw_diff": "- /v1/charges\n+ /v1/payment_intents"
-  }'
-```
-
-### Mark Alert as Read
-
-```bash
-curl -X PATCH http://localhost:8000/alerts/1 \
-  -H "Content-Type: application/json" \
-  -d '{"is_read": true}'
-```
-
----
-
-## Week 2 Roadmap
-
-- [ ] Alembic migration setup (`alembic init`)
-- [ ] Background scheduler to fetch and diff API docs
-- [ ] AI-powered change detection (Gemini API)
-- [ ] Email / webhook notifications for breaking changes
-- [ ] Pytest test suite with a test database
-
----
-
-## Security Notes
-
-- `.env` is in `.gitignore` — **never commit it**
-- All secrets are loaded via `pydantic-settings` — **nothing hardcoded**
-- Use `GRANT` / `REVOKE` in PostgreSQL to limit user permissions in production
