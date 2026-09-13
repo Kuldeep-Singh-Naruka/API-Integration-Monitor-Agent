@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
 
-from sqlalchemy import String, Boolean, Integer
+from sqlalchemy import String, Boolean, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -51,6 +51,10 @@ class MonitoredAPI(Base):
     )
     last_checked_at: Mapped[Optional[datetime]] = mapped_column(
         nullable=True, default=None
+    )
+    # Full stripped content from the most recent *successful* scrape.
+    last_raw_content: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, default=None
     )
 
     # Relationship — one MonitoredAPI has many Alerts
