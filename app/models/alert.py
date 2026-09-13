@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from datetime import datetime, timezone
 from typing import Optional, TYPE_CHECKING
 
@@ -39,9 +41,10 @@ class Alert(Base):
     severity: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        comment="Allowed values: 'breaking' or 'non-breaking'",
+        comment="Allowed values: 'breaking', 'non-breaking', or 'error'",
     )
     raw_diff: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    suggested_fix: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
 
     # State
     is_read: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

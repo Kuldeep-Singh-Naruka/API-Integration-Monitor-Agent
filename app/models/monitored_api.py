@@ -1,7 +1,9 @@
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, List
+from __future__ import annotations
 
-from sqlalchemy import String, Boolean, Integer
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import String, Boolean, Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -41,6 +43,18 @@ class MonitoredAPI(Base):
         default=_utcnow,
         onupdate=_utcnow,
         nullable=False,
+    )
+
+    # Change-detection fields — system-managed, never supplied by the client.
+    last_content_hash: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, default=None
+    )
+    last_checked_at: Mapped[Optional[datetime]] = mapped_column(
+        nullable=True, default=None
+    )
+    # Full stripped content from the most recent *successful* scrape.
+    last_raw_content: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, default=None
     )
 
     # Relationship — one MonitoredAPI has many Alerts

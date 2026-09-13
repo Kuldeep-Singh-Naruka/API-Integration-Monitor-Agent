@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     APP_NAME: str = "API Integration Monitor"
     DEBUG: bool = False
+    TAVILY_API_KEY: str
+    GROQ_API_KEY: str
+    SCHEDULER_SECRET: str
 
     model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
 
