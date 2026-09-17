@@ -1,4 +1,4 @@
-"""
+﻿"""
 app/services/scheduler.py
 --------------------------
 Batch orchestration layer for the scheduled check runner.
@@ -10,7 +10,7 @@ reused independently of the HTTP layer.
 
 Dependency graph (no cycles):
     scheduler
-        <- monitor_check  (check_monitored_api, CheckResult)
+        <- agent/graph    (compiled_monitor_graph)
         <- alerts         (create_alert_record)
         <- models         (MonitoredAPI)
 """
@@ -21,22 +21,26 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agent.graph import compiled_monitor_graph
 from app.models.monitored_api import MonitoredAPI
 from app.services.alerts import create_alert_record
-from app.services.monitor_check import check_monitored_api
 
 
 def run_all_checks(db: Session) -> list[dict[str, Any]]:
-    """Run check_monitored_api() for every active (is_active=True) MonitoredAPI row.
+    """Run the monitor graph for every active (is_active=True) MonitoredAPI row.
 
-    Failures are isolated per-API: if check_monitored_api() raises an
-    unexpected exception for one API (e.g. a bug in chunk_markdown or
-    store_chunks that check_monitored_api deliberately lets propagate),
-    the error is recorded as an "error"-severity Alert so it is visible
-    through the REST API, and the loop continues with the next API.
+    Calls ``compiled_monitor_graph.invoke()`` directly (not through the
+    check_monitored_api() wrapper) because the scheduler only needs the
+    ``status`` field from the final state.
 
-    Does not commit or rollback the session itself beyond what
-    check_monitored_api() and create_alert_record() already do internally.
+    Failures are isolated per-API: if the graph raises an unexpected exception
+    for one API (e.g. a bug in chunk_markdown or store_chunks that compare_node
+    deliberately lets propagate), the error is recorded as an "error"-severity
+    Alert so it is visible through the REST API, and the loop continues with the
+    next API.
+
+    Does not commit or rollback the session itself beyond what the graph nodes
+    and create_alert_record() already do internally.
 
     Args:
         db: An active SQLAlchemy Session, typically provided by Depends(get_db).
@@ -47,17 +51,15 @@ def run_all_checks(db: Session) -> list[dict[str, Any]]:
         A list of one dict per API that was processed during this cycle.
         Each dict contains:
 
-        - ``api_id``   (int)  — primary key of the MonitoredAPI row.
-        - ``api_name`` (str)  — human-readable name for logging / response bodies.
-        - ``status``   (str)  — the CheckResult.status string returned by
-                                check_monitored_api(), or ``"unexpected_error"``
-                                when the try/except block caught an unhandled
-                                exception before check_monitored_api() could
-                                return a result.
+        - ``api_id``   (int)  -- primary key of the MonitoredAPI row.
+        - ``api_name`` (str)  -- human-readable name for logging / response bodies.
+        - ``status``   (str)  -- the status string from the final graph state, or
+                                 ``"unexpected_error"`` when an unhandled exception
+                                 was caught before the graph could return a result.
     """
     active_apis: list[MonitoredAPI] = (
         db.query(MonitoredAPI)
-        .filter(MonitoredAPI.is_active == True)  # noqa: E712 — SQLAlchemy requires == not `is`
+        .filter(MonitoredAPI.is_active == True)  # noqa: E712 -- SQLAlchemy requires == not `is`
         .all()
     )
 
@@ -65,16 +67,22 @@ def run_all_checks(db: Session) -> list[dict[str, Any]]:
 
     for api in active_apis:
         try:
-            check_result = check_monitored_api(db, api)
+            initial_state = {
+                "db": db,
+                "api": api,
+                "old_hash": api.last_content_hash,
+                "old_content": api.last_raw_content,
+            }
+            final_state = compiled_monitor_graph.invoke(initial_state)
             results.append(
                 {
                     "api_id": api.id,
                     "api_name": api.name,
-                    "status": check_result.status,
+                    "status": final_state["status"],
                 }
             )
         except Exception as exc:
-            # check_monitored_api deliberately lets chunk_markdown / store_chunks
+            # compare_node deliberately lets chunk_markdown / store_chunks
             # exceptions propagate so they surface in logs.  We catch them here
             # at the batch level to keep the rest of the APIs running, and
             # persist an error-severity Alert so the failure is visible through

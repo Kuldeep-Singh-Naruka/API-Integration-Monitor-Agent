@@ -1,31 +1,53 @@
 # API Integration Monitor
 
-A production-ready backend service that actively monitors third-party API documentation for breaking and non-breaking changes.
+A backend service that actively monitors third-party API documentation for breaking and non-breaking changes.
 
-Rather than a generic template, here is the **real status** of what this project actually does and how much is completed right now.
+## 🚀 Current Status: Core Engine
 
-## 🚀 Current Status: Core Engine is Fully Built
-
-The entire backend pipeline for monitoring, detecting, classifying, and storing API changes is **done and operational**.
+The entire backend pipeline for monitoring, detecting, classifying, and storing API changes is functional.
 
 ### What is Completed:
 - **FastAPI + PostgreSQL** backend with SQLAlchemy ORM.
-- **Scraping Engine**: Uses [Tavily](https://tavily.com/) to fetch the latest documentation content, aggressively stripping out navigation boilerplate to reduce noise.
-- **Change Detection**: Uses SHA-256 hashing to quickly detect if docs have changed, and [ChromaDB](https://www.trychroma.com/) for chunked vector storage.
-- **AI Classification**: Uses [Groq](https://groq.com/) (LLM) to parse unified diffs and classify API changes strictly as `breaking` or `non-breaking`, providing developer-friendly summaries and fix suggestions.
-- **Orchestration**: A bulletproof orchestration layer (`monitor_check.py`) that handles baseline establishments, unchanged states, and error handling. Faults are isolated so one failing API scrape doesn't crash the whole batch.
-- **Automated Scheduling**: A protected `/internal/run-checks` endpoint triggered automatically by a **GitHub Actions daily cron job** (`.github/workflows/scheduled-check.yml`), secured by a timing-attack-safe shared secret.
 - **RESTful Endpoints**: Full CRUD endpoints for managing Monitored APIs and reading Alerts.
+- **Scheduling**: Scheduling is implemented via a secret-protected `POST /internal/run-checks` endpoint (`X-Scheduler-Secret` header), designed to be called by an external scheduler. Automatic daily triggering via GitHub Actions cron is intentionally not yet enabled (only manual `workflow_dispatch` works for now).
+
 ---
 
-## ⚙️ How it Works
+## ⚙️ Architecture: LangGraph Pipeline
 
-1. **Trigger**: GitHub Actions runs daily at 03:17 UTC and hits `POST /internal/run-checks`.
-2. **Fetch**: The system loops over all active APIs and fetches their docs via Tavily.
-3. **Compare**: It strips boilerplate and hashes the markdown. If the hash matches the database, it skips to the next API to save resources.
-4. **Diff & Analyze**: If the hash changes, it computes a pure python text diff of the markdown, then sends that diff to Groq.
-5. **Classify**: Groq reads the diff, classifies the change, and generates an `Alert` (e.g., `"Endpoint /v1/charges deprecated"` -> `breaking`).
-6. **Store**: The vector store (ChromaDB) is rebuilt with the new chunks, and the Postgres database is updated with the new hash, raw content, and the new Alert.
+The system's core orchestration has been retrofitted to use [LangGraph](https://langchain-ai.github.io/langgraph/), replacing the previous imperative pipeline. The AI logic lives in the `app/agent/` package, structured as a 5-node `StateGraph`:
+
+```mermaid
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	fetch_node(fetch_node)
+	compare_node(compare_node)
+	summarize_node(summarize_node)
+	suggest_fix_node(suggest_fix_node)
+	store_alert_node(store_alert_node)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> fetch_node;
+	compare_node -.-> __end__;
+	compare_node -.-> summarize_node;
+	fetch_node -.-> compare_node;
+	fetch_node -.-> store_alert_node;
+	suggest_fix_node --> store_alert_node;
+	summarize_node -.-> store_alert_node;
+	summarize_node -.-> suggest_fix_node;
+	store_alert_node --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
+### Pipeline Details:
+1. **`fetch_node`**: Uses [Tavily](https://tavily.com/) to fetch the latest documentation content (via extract) or perform web searches for changelogs/migration guides.
+2. **`compare_node`**: Compares the newly fetched documentation against the stored baseline to detect if a change occurred.
+3. **`summarize_node`**: If a change is detected, uses `ChatGroq` (with `.with_structured_output()`) to classify the change as `breaking` or `non-breaking` and summarize the impact.
+4. **`suggest_fix_node`**: Uses another `ChatGroq` call to propose actionable fixes or migration steps based on the summary.
+5. **`store_alert_node`**: Saves the generated `Alert` to the Postgres database.
+
+**Conditional Routing**: The graph uses conditional routing based on `status` and `severity`. Errors bypass processing and skip straight to alert storage. If there's no change or a new baseline is being established, it skips to the end with no alert generated.
 
 ---
 
@@ -42,6 +64,13 @@ You will need:
 - A [Groq API Key](https://console.groq.com/keys) (`GROQ_API_KEY`)
 - A generated `SCHEDULER_SECRET` (Run: `python -c "import secrets; print(secrets.token_urlsafe(32))"`)
 
+**Optional: LangSmith Tracing**
+The app runs fine without tracing (with `LANGSMITH_TRACING=false` or unset), but you can enable LangSmith to trace the LangGraph pipeline execution:
+- `LANGSMITH_TRACING=true`
+- `LANGSMITH_API_KEY=your-langsmith-api-key`
+- `LANGSMITH_PROJECT=api-integration-monitor-agent`
+- `LANGSMITH_ENDPOINT=https://api.smith.langchain.com`
+
 ### 2. Install Dependencies
 Make sure you are in your virtual environment, then run:
 ```bash
@@ -56,7 +85,7 @@ uvicorn main:app --reload
 - **ReDoc**: http://localhost:8000/redoc
 
 ### 4. Trigger a Manual Check
-You can trigger the batch check locally (mimicking the GitHub Action) by passing your secret:
+You can trigger the batch check locally by passing your secret:
 ```bash
 curl -X POST http://localhost:8000/internal/run-checks \
   -H "X-Scheduler-Secret: your_long_random_secret_here"
