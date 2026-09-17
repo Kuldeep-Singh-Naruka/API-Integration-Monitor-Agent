@@ -1,46 +1,32 @@
-"""
+﻿"""
 app/services/monitor_check.py
 ------------------------------
-Orchestration layer that ties scraping, change-detection, ChromaDB storage,
-and alert creation together into a single, testable function.
+Thin adapter over the compiled LangGraph StateGraph.
 
-This module sits between the scheduler (next task) and the lower-level
-service modules.  It never imports from app.routers and has no FastAPI
-dependencies -- it is a pure service layer.
+This module preserves the original public API -- CheckResult dataclass and
+check_monitored_api() signature -- so that tests/monitor_check_test.py
+needs ZERO changes.  The orchestration logic now lives in app/agent/.
 
 Dependency graph (imports flow downward, no cycles):
     monitor_check
-        <- scraper          (fetch_docs_content)
-        <- vectorstore      (strip_navigation_boilerplate, chunk_markdown,
-                             compute_content_hash, store_chunks)
-        <- alerts           (create_alert_record)
-        <- summarizer       (compute_diff, summarize_change)
+        <- agent/graph      (compiled_monitor_graph)
         <- models           (MonitoredAPI, Alert)
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Literal, Optional
 
 from sqlalchemy.orm import Session
 
+from app.agent.graph import compiled_monitor_graph
 from app.models.alert import Alert
 from app.models.monitored_api import MonitoredAPI
-from app.services.alerts import create_alert_record
-from app.services.scraper import fetch_docs_content
-from app.services.summarizer import compute_diff, summarize_change
-from app.services.vectorstore import (
-    chunk_markdown,
-    compute_content_hash,
-    store_chunks,
-    strip_navigation_boilerplate,
-)
 
 
 # ---------------------------------------------------------------------------
-# Result type
+# Result type  (unchanged -- tests depend on this exact shape)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -78,7 +64,7 @@ class CheckResult:
                 ``old_content`` and ``new_content`` are populated in all
                 "changed" outcomes.
 
-        alert:       Set only when status == "error".
+        alert:       Set when status == "error" or status == "changed".
         old_content: Set only when status == "changed".  The stripped text
                      from the *previous* successful scrape, read from
                      MonitoredAPI.last_raw_content before it was overwritten.
@@ -99,25 +85,18 @@ class CheckResult:
 def check_monitored_api(db: Session, api: MonitoredAPI) -> CheckResult:
     """Run one full check cycle for a single monitored API.
 
-    This function is the central orchestration point called by the scheduler
-    on every poll interval.  It always returns a CheckResult and never lets
-    exceptions propagate to the caller, *except* for errors from
-    chunk_markdown() and store_chunks() -- those indicate real bugs (not
-    expected network/availability failures) and should surface as unhandled
-    exceptions so they are visible in logs/Sentry.
+    Thin adapter that builds the initial MonitorState, invokes the compiled
+    LangGraph StateGraph, and maps the final state back to a CheckResult.
 
-    Assumptions:
-        - ``api`` is a live, attached SQLAlchemy ORM instance bound to ``db``.
-        - ``db`` is an active Session; this function commits it internally.
-        - The caller is responsible for filtering to only active APIs
-          (is_active == True) before calling this function.
+    The CheckResult contract is identical to the pre-LangGraph implementation
+    so that tests/monitor_check_test.py needs zero changes.
 
     Args:
-        db:  An open SQLAlchemy Session.  Committed inside this function;
+        db:  An open SQLAlchemy Session.  Committed inside the graph nodes;
              the caller should not commit it separately.
         api: The MonitoredAPI ORM instance to check.  Its last_content_hash,
              last_checked_at, and last_raw_content fields are mutated
-             in-place and persisted.
+             in-place inside the graph nodes and persisted there.
 
     Returns:
         A CheckResult with one of four statuses:
@@ -131,151 +110,37 @@ def check_monitored_api(db: Session, api: MonitoredAPI) -> CheckResult:
     Raises:
         Any exception from chunk_markdown() or store_chunks() -- these
         indicate infrastructure or logic bugs and must not be silently
-        swallowed.
+        swallowed (propagated from compare_node uncaught).
     """
-    _utcnow: datetime = datetime.now(timezone.utc)
+    initial_state = {
+        "db": db,
+        "api": api,
+        "old_hash": api.last_content_hash,
+        "old_content": api.last_raw_content,
+    }
 
-    # ------------------------------------------------------------------
-    # Step 1: Attempt scrape.
-    # ------------------------------------------------------------------
-    try:
-        raw_content: str = fetch_docs_content(api.docs_url)
-    except ValueError as exc:
-        # Scrape failed (URL unreachable, auth wall, Tavily error, etc.).
-        # Update last_checked_at so operators can see when the last attempt
-        # ran, then persist an error-severity Alert.
-        api.last_checked_at = _utcnow
-        db.commit()
+    final_state = compiled_monitor_graph.invoke(initial_state)
 
-        error_alert: Alert = create_alert_record(
-            db=db,
-            api_id=api.id,
-            summary=f"Failed to fetch docs: {exc}",
-            severity="error",
-            raw_diff=None,
-        )
-        return CheckResult(status="error", alert=error_alert)
-
-    # ------------------------------------------------------------------
-    # Step 2: Strip boilerplate and compute the hash of the new content.
-    # ------------------------------------------------------------------
-    stripped: str = strip_navigation_boilerplate(raw_content)
-    new_hash: str = compute_content_hash(stripped)
-
-    # Read both change-detection fields *before* overwriting them so we
-    # have the previous values available for the diff/return path.
-    old_hash: Optional[str] = api.last_content_hash
-    old_content: Optional[str] = api.last_raw_content
-
-    # Always stamp last_checked_at -- regardless of which branch below runs.
-    api.last_checked_at = _utcnow
-
-    # ------------------------------------------------------------------
-    # Step 3a: First-ever successful check -- establish the baseline.
-    # ------------------------------------------------------------------
-    if old_hash is None:
-        chunks: list[str] = chunk_markdown(stripped)
-        store_chunks(api.id, chunks)
-
-        api.last_content_hash = new_hash
-        api.last_raw_content = stripped
-        db.commit()
-        db.refresh(api)
-
-        return CheckResult(status="baseline_established")
-
-    # ------------------------------------------------------------------
-    # Step 3b: Hash unchanged -- docs have not changed.
-    # ------------------------------------------------------------------
-    if old_hash == new_hash:
-        # Only last_checked_at was mutated; commit it.
-        db.commit()
-        return CheckResult(status="no_change")
-
-    # ------------------------------------------------------------------
-    # Step 3c: Hash differs -- real content change detected.
-    # ------------------------------------------------------------------
-    chunks = chunk_markdown(stripped)
-    store_chunks(api.id, chunks)  # Fully replaces the ChromaDB collection.
-
-    api.last_content_hash = new_hash
-    api.last_raw_content = stripped
-    db.commit()
-    db.refresh(api)
-
-    # Guard: last_raw_content should always be populated whenever
-    # last_content_hash is set, but protect against data corruption where the
-    # snapshot is missing.  Without it we cannot compute a meaningful diff.
-    if old_content is None:
-        alert = create_alert_record(
-            db=db,
-            api_id=api.id,
-            summary=(
-                "Content changed (hash mismatch) but the previous content "
-                "snapshot is missing -- cannot compute diff."
-            ),
-            severity="error",
-            raw_diff=None,
-        )
-        return CheckResult(
-            status="changed",
-            alert=alert,
-            old_content=None,
-            new_content=stripped,
-        )
-
-    # Stage 1: compute the unified diff (pure Python, no I/O).
-    # If this raises (e.g. identical content despite differing hashes due to
-    # data inconsistency) the diff is unavailable and raw_diff stays None.
-    try:
-        diff: str = compute_diff(old_content, stripped)
-    except Exception as exc:
-        alert = create_alert_record(
-            db=db,
-            api_id=api.id,
-            summary=f"Content changed but diff computation failed: {exc}",
-            severity="error",
-            raw_diff=None,
-        )
-        return CheckResult(
-            status="changed",
-            alert=alert,
-            old_content=old_content,
-            new_content=stripped,
-        )
-
-    # Stage 2: call the Groq LLM to classify and summarise the diff.
-    # If summarisation fails for any reason (network error, bad JSON, model
-    # quota, invalid severity, etc.) we still record the change as an error
-    # alert -- but now we CAN include the raw diff since Stage 1 succeeded.
-    try:
-        change_summary = summarize_change(diff)
-    except Exception as exc:
-        alert = create_alert_record(
-            db=db,
-            api_id=api.id,
-            summary=f"Content changed but summarization failed: {exc}",
-            severity="error",
-            raw_diff=diff,         # diff is available; preserve it
-        )
-        return CheckResult(
-            status="changed",
-            alert=alert,
-            old_content=old_content,
-            new_content=stripped,
-        )
-
-    alert = create_alert_record(
-        db=db,
-        api_id=api.id,
-        summary=change_summary.summary,
-        severity=change_summary.severity,
-        raw_diff=diff,
-        suggested_fix=change_summary.suggested_fix,
+    status: Literal["error", "baseline_established", "no_change", "changed"] = (
+        final_state["status"]
     )
+
+    # Resolve the Alert ORM object when an alert_id was stored.
+    alert: Optional[Alert] = None
+    alert_id: Optional[int] = final_state.get("alert_id")
+    if alert_id is not None:
+        alert = db.get(Alert, alert_id)
+
+    # old_content / new_content are only meaningful on the "changed" path.
+    old_content: Optional[str] = None
+    new_content: Optional[str] = None
+    if status == "changed":
+        old_content = initial_state["old_content"]
+        new_content = final_state.get("stripped_content")
+
     return CheckResult(
-        status="changed",
+        status=status,
         alert=alert,
         old_content=old_content,
-        new_content=stripped,
+        new_content=new_content,
     )
