@@ -48,6 +48,7 @@ def get_groq_chat_model() -> ChatGroq:
     return ChatGroq(
         model=_GROQ_MODEL,
         api_key=settings.GROQ_API_KEY,  # type: ignore[arg-type]
+        max_tokens=500,
         # These are forwarded to the Groq API as extra body params.
         # reasoning_effort="none"  → fastest response, no chain-of-thought.
         # reasoning_format="hidden" → reasoning tokens suppressed from output,

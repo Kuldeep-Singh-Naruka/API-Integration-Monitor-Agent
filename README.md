@@ -41,9 +41,9 @@ graph TD;
 ```
 
 ### Pipeline Details:
-1. **`fetch_node`**: Uses [Tavily](https://tavily.com/) to fetch the latest documentation content (via extract) or perform web searches for changelogs/migration guides.
+1. **`fetch_node`**: Uses [Tavily](https://tavily.com/) (extract) to fetch the latest documentation content and strip navigation boilerplate.
 2. **`compare_node`**: Compares the newly fetched documentation against the stored baseline to detect if a change occurred.
-3. **`summarize_node`**: If a change is detected, uses `ChatGroq` (with `.with_structured_output()`) to classify the change as `breaking` or `non-breaking` and summarize the impact.
+3. **`summarize_node`**: If a change is detected, computes a diff, runs a Tavily search (distinct from the extract call in fetch_node) for outside context like changelogs or migration guides, then uses `ChatGroq` (with `.with_structured_output()`) to classify the change as `breaking` or `non-breaking` and summarize the impact.
 4. **`suggest_fix_node`**: Uses another `ChatGroq` call to propose actionable fixes or migration steps based on the summary.
 5. **`store_alert_node`**: Saves the generated `Alert` to the Postgres database.
 
